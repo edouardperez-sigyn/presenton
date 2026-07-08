@@ -17,7 +17,10 @@ from enums.webhook_event import WebhookEvent
 from models.api_error_model import APIErrorModel
 from models.generate_presentation_request import GeneratePresentationRequest
 from models.presentation_and_path import PresentationPathAndEditPath
-from models.presentation_from_template import EditPresentationRequest
+from models.presentation_from_template import (
+    EditPresentationRequest,
+    RenderFromSlidesRequest,
+)
 from models.presentation_outline_model import (
     PresentationOutlineModel,
     SlideOutlineModel,
@@ -1275,3 +1278,40 @@ async def derive_presentation_from_existing_one(
         **presentation_and_path.model_dump(),
         edit_path=f"/presentation?id={new_presentation.id}",
     )
+
+
+# --- Sigyn fork : rendu direct depuis des slides PRE-CONSTRUITES (bypass etape A + B) -------
+@PRESENTATION_ROUTER.post("/render-from-slides", response_model=PresentationPathAndEditPath)
+async def render_from_slides(
+    request_http: Request,
+    data: Annotated[RenderFromSlidesRequest, Body()],
+    sql_session: AsyncSession = Depends(get_async_session),
+):
+    layout_model = await get_layout_by_name(data.template)
+    n_layouts = len(layout_model.slides)
+    presentation_id = uuid.uuid4()
+    presentation = PresentationModel(
+        id=presentation_id, content=data.title or "", n_slides=len(data.slides),
+        language="French", title=data.title, layout=layout_model.model_dump(),
+    )
+    slides: List[SlideModel] = []
+    for i, s in enumerate(data.slides):
+        if s.index < 0 or s.index >= n_layouts:
+            raise HTTPException(status_code=400, detail=f"slide {i}: index {s.index} hors bornes (0..{n_layouts-1})")
+        slide_layout = layout_model.slides[s.index]
+        slides.append(SlideModel(
+            presentation=presentation_id, layout_group=layout_model.name, layout=slide_layout.id,
+            index=i, speaker_note=(s.content or {}).get("__speaker_note__"), content=s.content,
+        ))
+    image_generation_service = ImageGenerationService(get_images_directory())
+    assets_lists = await asyncio.gather(*[
+        process_slide_and_fetch_assets(image_generation_service, slide,
+            icon_weight=layout_model.icon_weight, allow_image_fallback=True) for slide in slides])
+    generated_assets = [a for lst in assets_lists for a in lst]
+    sql_session.add(presentation); sql_session.add_all(slides); sql_session.add_all(generated_assets)
+    await sql_session.commit()
+    presentation_and_path = await export_presentation(
+        presentation_id, presentation.title or str(presentation_id), data.export_as,
+        cookie_header=_build_export_cookie_header(request_http))
+    return PresentationPathAndEditPath(**presentation_and_path.model_dump(),
+        edit_path=f"/presentation?id={presentation_id}")
