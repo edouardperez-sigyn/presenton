@@ -149,5 +149,11 @@ COPY scripts/presenton-terminal-banner.mjs /app/scripts/presenton-terminal-banne
 COPY scripts/user-config-env.mjs /app/scripts/user-config-env.mjs
 COPY nginx.conf /etc/nginx/nginx.conf
 
+
+# Sigyn fork : wrapper Chromium avec les flags conteneur-safe (fix "Target closed" = /dev/shm + sandbox)
+RUN mv /usr/bin/chromium /usr/bin/chromium-real     && printf '#!/bin/sh
+exec /usr/bin/chromium-real --no-sandbox --disable-dev-shm-usage --disable-gpu --headless=new "$@"
+' > /usr/bin/chromium     && chmod +x /usr/bin/chromium
+
 EXPOSE 80
 CMD ["node", "/app/start.js"]
