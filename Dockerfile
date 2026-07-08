@@ -11,16 +11,16 @@ RUN python -m venv --without-pip /opt/venv \
     && pip install --no-cache-dir uv
 
 COPY servers/fastapi/pyproject.toml servers/fastapi/uv.lock ./
-RUN \
+RUN --mount=type=cache,target=/root/.cache/uv \
     uv export --frozen --no-dev --no-emit-project -o /tmp/requirements.txt \
     && uv pip install --python /opt/venv/bin/python -r /tmp/requirements.txt
 
 COPY servers/fastapi /app/servers/fastapi
-RUN \
+RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python /opt/venv/bin/python --no-deps .
 # mem0/spaCy BM25 lemmatization loads en_core_web_sm at runtime; spaCy tries pip to
 # download it otherwise. Runtime image has no pip in PATH (--without-pip venv).
-RUN \
+RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python /opt/venv/bin/python \
     "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 ENV HF_HOME=/root/.cache/huggingface \
@@ -36,7 +36,7 @@ WORKDIR /app/servers/nextjs
 ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY servers/nextjs/package.json servers/nextjs/package-lock.json ./
-RUN \
+RUN --mount=type=cache,target=/root/.npm \
     npm ci
 
 COPY servers/nextjs /app/servers/nextjs
@@ -124,8 +124,6 @@ COPY --from=fastapi-builder /root/.cache/presenton/fastembed-icons /root/.cache/
 COPY --from=assets-builder /app/package.json /app/package.json
 COPY --from=assets-builder /app/document-extraction-liteparse /app/document-extraction-liteparse
 COPY --from=assets-builder /app/presentation-export /app/presentation-export
-# Sigyn fork : bundle d'export (Chromium) de l'image officielle QUI MARCHE
-COPY --from=ghcr.io/presenton/presenton:latest /app/presentation-export /app/presentation-export
 COPY --from=assets-builder /app/scripts/sync-presentation-export.cjs /app/scripts/sync-presentation-export.cjs
 
 RUN set -eux; \
@@ -148,12 +146,6 @@ COPY start.js LICENSE NOTICE ./
 COPY scripts/presenton-terminal-banner.mjs /app/scripts/presenton-terminal-banner.mjs
 COPY scripts/user-config-env.mjs /app/scripts/user-config-env.mjs
 COPY nginx.conf /etc/nginx/nginx.conf
-
-
-# Sigyn fork : wrapper Chromium avec les flags conteneur-safe (fix "Target closed" = /dev/shm + sandbox)
-RUN mv /usr/bin/chromium /usr/bin/chromium-real     && printf '#!/bin/sh
-exec /usr/bin/chromium-real --no-sandbox --disable-dev-shm-usage --disable-gpu --headless=new "$@"
-' > /usr/bin/chromium     && chmod +x /usr/bin/chromium
 
 EXPOSE 80
 CMD ["node", "/app/start.js"]
